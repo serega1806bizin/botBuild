@@ -67,6 +67,73 @@ def get_admin_keyboard():
     ]
     return InlineKeyboardMarkup([[InlineKeyboardButton(text, callback_data=data) for text, data in buttons]])
 
+def get_admin_keyboard():
+    buttons = [
+        ("Просмотр отчетов", "group"),
+        ("Сброс всех отчетов", "reset")
+    ]
+    return InlineKeyboardMarkup([[InlineKeyboardButton(text, callback_data=data) for text, data in buttons]])
+
+async def update_admin_message(context, chat_id, text, keyboard):
+    try:
+        sent_message = await context.bot.send_message(chat_id, text, reply_markup=keyboard)
+        context.user_data["last_message_id"] = sent_message.message_id
+    except Exception as e:
+        logging.warning(f"Ошибка обновления сообщения: {e}")
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.message.chat.id
+
+    if query.data in ["group", "reset"]:
+        if user_id not in ADMIN_IDS:
+            await update_admin_message(context, user_id, "У вас нет доступа к этой команде.", get_admin_keyboard())
+            return
+
+    if query.data == "group":
+        if not group_reports:
+            await update_admin_message(context, user_id, "Нет зарегистрированных групп.", get_admin_keyboard())
+        else:
+            report_statuses = "\n".join(
+                [
+                    f"{data.name}\n"
+                    f"Статус: {'✅ (получено ' + str(data.photo_count) + ' фото)' if data.report_sent else '❌'}\n"
+                    f"Последний отчет: {data.last_report_time or 'Нет данных'}\n-------------------------\n"
+                    for data in group_reports.values()
+                ]
+            )
+            await update_admin_message(context, user_id, report_statuses, get_admin_keyboard())
+
+    elif query.data == "reset":
+        for group in group_reports.values():
+            group.report_sent = False
+            group.photo_count = 0
+            group.last_report_time = None
+        save_groups_to_file()
+        await update_admin_message(context, user_id, "Все отчеты сброшены!", get_admin_keyboard())
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.chat.id
+    
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("Нет доступа к боту.")
+        return
+    
+    if update.message.chat.type == "private":
+        await update_admin_message(
+            context,
+            user_id,
+            "Добро пожаловать! Этот бот помогает отслеживать отчеты в группах.",
+            get_admin_keyboard()
+        )
+    else:
+        await update.message.reply_text(
+            "Привет! Этот бот помогает отслеживать отчеты в вашей группе."
+        )
+
+
 # Функция отправки отчетов
 async def send_group_reports(app):
     report_text = "📊 Еженедельный отчет по группам:\n\n"

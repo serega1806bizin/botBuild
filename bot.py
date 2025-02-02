@@ -3,10 +3,9 @@ import json
 import os
 import logging
 import datetime
-import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -15,11 +14,11 @@ from telegram.ext import (
     ChatMemberHandler,
     filters,
     ContextTypes,
+    
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pytz import timezone
 
-# Настройки
 KYIV_TZ = timezone("Europe/Kiev")
 BOT_TOKEN = "7963376111:AAHslFJhLqQtO7lU7zKFqg3QORwpLd4Aos4"
 ADMIN_IDS = [1275110787, 7201861104, 78792040, 5750191057, 224519300, 6455959224]
@@ -31,7 +30,6 @@ logging.basicConfig(
     datefmt="%d-%m-%Y %H:%M"
 )
 
-# Хранилище фотографий и отчетов
 temp_photo_storage = defaultdict(deque)
 
 @dataclass
@@ -41,7 +39,6 @@ class GroupReport:
     photo_count: int = 0
     last_report_time: str = None
 
-# Функции работы с файлами
 def load_groups_from_file():
     if not os.path.exists(GROUPS_FILE):
         with open(GROUPS_FILE, "w", encoding="utf-8") as file:
@@ -58,14 +55,6 @@ def save_groups_to_file():
         json.dump({str(k): v.__dict__ for k, v in group_reports.items()}, file, ensure_ascii=False, indent=4)
 
 group_reports = load_groups_from_file()
-
-# Создание клавиатуры для админов
-def get_admin_keyboard():
-    buttons = [
-        ("Просмотр отчетов", "group"),
-        ("Сброс всех отчетов", "reset")
-    ]
-    return InlineKeyboardMarkup([[InlineKeyboardButton(text, callback_data=data) for text, data in buttons]])
 
 def get_admin_keyboard():
     buttons = [
@@ -134,18 +123,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# Функция отправки отчетов
 async def send_group_reports(app):
-    report_text = "📊 Еженедельный отчет по группам:\n\n"
-    report_text += "\n".join(
-        [
-            f"Группа: {data.name}\n"
-            f"Статус: {'✅ (получено ' + str(data.photo_count) + ' фото)' if data.report_sent else '❌'}\n"
-            f"Последний отчет: {data.last_report_time or 'Нет данных'}\n"
-            f"-------------------------\n"
-            for data in group_reports.values()
-        ]
-    )
+    if not group_reports:
+        report_text = "Нет зарегистрированных групп."
+    else:
+        report_text = "📊 Еженедельный отчет по группам:\n\n"
+        report_text += "\n".join(
+            [
+                f"Группа: {data.name}\n"
+                f"Статус: {'✅ (получено ' + str(data.photo_count) + ' фото)' if data.report_sent else '❌'}\n"
+                f"Последний отчет: {data.last_report_time or 'Нет данных'}\n"
+                f"-------------------------\n"
+                for data in group_reports.values()
+            ]
+        )
 
     for admin_id in ADMIN_IDS:
         try:
@@ -154,49 +145,135 @@ async def send_group_reports(app):
         except Exception as e:
             logging.error(f"Не удалось отправить отчет администратору {admin_id}: {e}")
 
-# Очистка старых фото
+
 async def clear_old_photos():
     while True:
         now = datetime.datetime.now()
         for chat_id, photos in list(temp_photo_storage.items()):
             temp_photo_storage[chat_id] = deque([
                 (msg, timestamp) for msg, timestamp in photos
-                if (now - timestamp).seconds <= 60
+                if (now - timestamp).seconds <= 60  # Хранить фото 1 минуту
             ])
-        await asyncio.sleep(30)
+        await asyncio.sleep(30)  # Чистка каждые 30 секунд
 
-# Настройка планировщика
+
 def setup_scheduler(app):
     scheduler = AsyncIOScheduler()
     kyiv_tz = timezone("Europe/Kiev")
 
     scheduler.add_job(
-        lambda: asyncio.ensure_future(send_group_reports(app)),
+        send_group_reports,  # Запуск еженедельного отчета
         "cron",
-        day_of_week="mon",
-        hour=12,
-        minute=0,
-        timezone=kyiv_tz
+        day_of_week="wed",
+        hour=22,
+
+        minute=58,
+        timezone=kyiv_tz,
+        args=[app]
     )
 
-    def start_scheduler():
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        scheduler.start()
-        loop.run_forever()
 
-    thread = threading.Thread(target=start_scheduler, daemon=True)
-    thread.start()
+    loop.create_task(run_scheduler(scheduler))
 
-# Основная логика бота
-async def main():
+async def run_scheduler(scheduler):
+    scheduler.start()
+
+async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat.id
+    document = update.message.document
+
+    logging.info(f"Получен документ в чате {chat_id}: {document.file_name} ({document.mime_type})")
+
+    if document.mime_type.startswith("image/"):
+        temp_photo_storage[chat_id].append((update.message, datetime.datetime.now()))
+        await update.message.reply_text("Фото загружено как документ, учтено в отчете.")
+    else:
+        await update.message.reply_text("Этот файл не является изображением.")
+
+
+
+async def welcome_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    status_change = update.my_chat_member
+
+    if status_change.new_chat_member.status in ["kicked", "left"]:
+        # Remove the group from the JSON file if the bot was removed or left
+        if chat.id in group_reports:
+            del group_reports[chat.id]
+            save_groups_to_file()
+            logging.info(f"Bot was removed from group {chat.title} ({chat.id}). Group data deleted.")
+        return
+
+    if chat.id not in group_reports:
+        group_reports[chat.id] = GroupReport(name=chat.title or f"Chat_{chat.id}")
+        save_groups_to_file()
+
+
+async def registr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat.id
+    chat_title = update.message.chat.title or f"Chat_{chat_id}"
+    if chat_id not in group_reports:
+        group_reports[chat_id] = GroupReport(name=chat_title)
+        save_groups_to_file()
+        await update.message.reply_text(f"Группа '{chat_title}' успешно зарегистрирована!")
+    else:
+        await update.message.reply_text(f"Группа '{chat_title}' уже зарегистрирована.")
+
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat.id
+    if chat_id in group_reports:
+        temp_photo_storage[chat_id].append((update.message, datetime.datetime.now()))
+
+async def report_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat.id
+    now = datetime.datetime.now(KYIV_TZ)
+    
+    if now.weekday() != 4:  # 4 - это пятница (0 - понедельник, 6 - воскресенье)
+        next_friday = now + datetime.timedelta(days=(4 - now.weekday()) % 7 or 7)
+        next_report_time = datetime.datetime(
+            next_friday.year, next_friday.month, next_friday.day, 0, 0, tzinfo=KYIV_TZ
+        )
+        time_until_next = next_report_time - now
+        days, seconds = time_until_next.days, time_until_next.seconds
+        hours, minutes = divmod(seconds // 60, 60)
+        
+        await update.message.reply_text(
+            f"Не время отчету. Начало отчетного дня через: {days} д. {hours} ч. {minutes} мин."
+        )
+        return
+    
+    if chat_id in group_reports:
+        await asyncio.sleep(5)  # Даем время для загрузки всех фотографий
+        current_time = datetime.datetime.now()
+        recent_photos = [msg for msg, timestamp in temp_photo_storage[chat_id] if (current_time - timestamp).seconds <= 20]
+
+        logging.info(f"Проверка отчета: найдено {len(recent_photos)} фото")
+
+        if recent_photos:
+            group_reports[chat_id].report_sent = True
+            group_reports[chat_id].photo_count = len(recent_photos)
+            group_reports[chat_id].last_report_time = current_time.strftime("%d-%m-%Y %H:%M")
+            save_groups_to_file()
+            await update.message.reply_text(f"Отчет принят! Всего фотографий: {len(recent_photos)}")
+        else:
+            await update.message.reply_text("Отчет не принят. Нет фотографий для отчета.")
+
+def main():
+    loop = asyncio.get_event_loop()
+    loop.create_task(clear_old_photos())
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.COMMAND, button_handler))
     app.add_handler(ChatMemberHandler(welcome_message, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(CommandHandler("registr", registr))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)^фотоотч[её]т$"), report_handler))
+
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.Document.IMAGE, document_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -205,16 +282,7 @@ async def main():
 
     setup_scheduler(app)
 
-    await app.run_polling()
+    loop.run_until_complete(app.run_polling())
 
-# Запуск бота
 if __name__ == "__main__":
-    try:
-        import nest_asyncio
-        nest_asyncio.apply()
-    except ImportError:
-        pass
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(main())
+    main()

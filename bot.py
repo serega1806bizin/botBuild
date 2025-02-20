@@ -59,6 +59,37 @@ class ArchiveReport:
     report_time: str  # формат "HH:MM"
     photo_count: int
 
+
+def auto_create_empty_report():
+    now = datetime.datetime.now(KYIV_TZ)
+    # Проверяем, что сегодня пятница
+    if now.weekday() != 4:
+        return
+    # Для каждой зарегистрированной группы проверяем, есть ли отчёт на сегодня
+    for group_id_str, group_name in registered_groups.items():
+        group_id = int(group_id_str)
+        report_exists = False
+        if group_id in archive_reports:
+            for report in archive_reports[group_id]:
+                if report.report_date == now.strftime("%d-%m-%Y"):
+                    report_exists = True
+                    break
+        if not report_exists:
+            new_report = ArchiveReport(
+                group_id=group_id,
+                group_name=group_name,
+                report_date=now.strftime("%d-%m-%Y"),
+                report_time="Не отправлен",
+                photo_count=0
+            )
+            if group_id in archive_reports:
+                archive_reports[group_id].append(new_report)
+            else:
+                archive_reports[group_id] = [new_report]
+    save_archive_reports(archive_reports)
+    logging.info("Пустые отчеты для пятницы созданы (если отсутствовали).")
+
+
 def load_archive_reports():
     if not os.path.exists(ARCHIVE_FILE):
         with open(ARCHIVE_FILE, "w", encoding="utf-8") as file:
@@ -110,8 +141,12 @@ async def send_latest_report_to_admins(app):
                         report_found = report
                         break
             if report_found:
-                status_line = f"✅ (получено {report_found.photo_count} фото)"
-                last_report_line = report_found.report_time
+                if report_found.photo_count > 0:
+                  status_line = f"✅ (получено {report_found.photo_count} фото)"
+                  last_report_line = report_found.report_time
+                else:
+                  status_line = "❌"
+                  last_report_line = "Нет данных"
             else:
                 status_line = "❌"
                 last_report_line = "Нет данных"
@@ -230,11 +265,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         report_found = report
                         break
             if report_found:
+              if report_found.photo_count > 0:
                 status_line = f"✅ (получено {report_found.photo_count} фото)"
                 last_report_line = report_found.report_time
+              else:
+                status_line = "❌"
+                last_report_line = "Нет данных"
             else:
                 status_line = "❌"
                 last_report_line = "Нет данных"
+
             message_lines.append(f"Группа: {group_name}")
             message_lines.append(f"Статус: {status_line}")
             message_lines.append(f"Последний отчет: {last_report_line}")
@@ -384,6 +424,16 @@ def setup_scheduler(app):
         minute=0,
         timezone=kyiv_tz
     )
+    scheduler.add_job(
+        auto_create_empty_report,
+        "cron",
+        day_of_week="fri",
+        hour=23,
+        minute=59,
+        timezone=kyiv_tz
+    )
+
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

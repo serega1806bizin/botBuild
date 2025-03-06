@@ -306,14 +306,12 @@ async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Обработчик команды "фотоотчет" (регистронезависимо)
 async def report_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat.id
-    # Если группа ещё не зарегистрирована, регистрируем её
     if str(chat_id) not in registered_groups:
         registered_groups[str(chat_id)] = update.message.chat.title or f"Chat_{chat_id}"
         save_registered_groups(registered_groups)
         logging.info(f"Группа {chat_id} зарегистрирована автоматически.")
 
     now = datetime.datetime.now(KYIV_TZ)
-    # Проверяем, что сегодня пятница (weekday 4)
     if now.weekday() != 4:
         next_friday = now + datetime.timedelta(days=(4 - now.weekday()) % 7 or 7)
         next_report_time = datetime.datetime(
@@ -327,27 +325,31 @@ async def report_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await asyncio.sleep(5)  # Ждем, чтобы гарантированно получить все фото
-    current_time = datetime.datetime.now()
+    # Фиксируем время получения команды
+    command_time = datetime.datetime.now()
+    await update.message.reply_text("Фотoотчет получен. Ждите 5 минут для завершения отчета.")
+    # Ждем 5 минут, чтобы принять фото как до, так и после команды
+    await asyncio.sleep(300)  # 5 минут
+
+    # Определяем временное окно: от 5 минут до команды до 5 минут после
+    lower_bound = command_time - datetime.timedelta(seconds=300)
+    upper_bound = command_time + datetime.timedelta(seconds=300)
+
     recent_photos = []
-    file_ids = []
     for msg, timestamp in list(temp_photo_storage[chat_id]):
-        if (current_time - timestamp).seconds <= 20:
+        if lower_bound <= timestamp <= upper_bound:
             recent_photos.append(msg)
-            if msg.photo:
-                file_ids.append(msg.photo[-1].file_id)
     logging.info(f"Проверка отчета: найдено {len(recent_photos)} фото")
     if recent_photos:
         report_date_str = now.strftime("%d-%m-%Y")
         report_time_str = now.strftime("%H:%M")
         new_report = ArchiveReport(
-          group_id=chat_id,
-          group_name=update.message.chat.title or f"Chat_{chat_id}",
-          report_date=report_date_str,
-          report_time=report_time_str,
-          photo_count=len(recent_photos)
+            group_id=chat_id,
+            group_name=update.message.chat.title or f"Chat_{chat_id}",
+            report_date=report_date_str,
+            report_time=report_time_str,
+            photo_count=len(recent_photos)
         )
-
         if chat_id in archive_reports:
             archive_reports[chat_id].append(new_report)
         else:
@@ -362,10 +364,12 @@ async def report_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def clear_old_photos():
     while True:
         now = datetime.datetime.now()
+        # Увеличиваем время хранения до 7 минут, чтобы не удалялись фото в течение 5-минутного окна
+        retention_seconds = 7 * 60
         for chat_id, photos in list(temp_photo_storage.items()):
             temp_photo_storage[chat_id] = deque([
                 (msg, timestamp) for msg, timestamp in photos
-                if (now - timestamp).seconds <= 60
+                if (now - timestamp).seconds <= retention_seconds
             ])
         await asyncio.sleep(30)
 

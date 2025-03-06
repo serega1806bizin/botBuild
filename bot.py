@@ -326,21 +326,21 @@ async def report_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     command_time = datetime.datetime.now(KYIV_TZ)
-    # Собираем фото, отправленные за 5 минут до команды
+    # Собираем фото, отправленные за 1 минуту до команды
     photos_before = []
     for msg, timestamp in list(temp_photo_storage[chat_id]):
-        if command_time - datetime.timedelta(seconds=300) <= timestamp <= command_time:
+        if command_time - datetime.timedelta(seconds=60) <= timestamp <= command_time:
             photos_before.append(msg)
 
     if photos_before:
         # Режим 2: Фото уже есть – сразу формируем отчёт
         collected_photos = photos_before
     else:
-        # Режим 1: Нет фото до команды, просим прислать их в течение 5 минут
-        await update.message.reply_text("У вас есть 5 минут чтобы прислать все фотографии к фотоотчету.")
-        await asyncio.sleep(300)  # ждём 5 минут
+        # Режим 1: Нет фото до команды, просим прислать их в течение 1 минуты
+        await update.message.reply_text("У вас есть 1 минута чтобы прислать все фотографии к фотоотчету.")
+        await asyncio.sleep(60)  # ждём 1 минуту
         collection_start = command_time
-        collection_end = command_time + datetime.timedelta(seconds=300)
+        collection_end = command_time + datetime.timedelta(seconds=60)
         collected_photos = []
         for msg, timestamp in list(temp_photo_storage[chat_id]):
             if collection_start <= timestamp <= collection_end:
@@ -364,9 +364,9 @@ async def report_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             archive_reports[chat_id] = [new_report]
         save_archive_reports(archive_reports)
         await update.message.reply_text(f"Отчет принят! Всего фотографий: {len(collected_photos)}")
-        # Удаляем фото, попавшие в интервал [command_time - 5 мин, command_time + 5 мин]
-        start_clear = command_time - datetime.timedelta(seconds=300)
-        end_clear = command_time + datetime.timedelta(seconds=300)
+        # Удаляем фото, попавшие в интервал [command_time - 1 минута, command_time + 1 минута]
+        start_clear = command_time - datetime.timedelta(seconds=60)
+        end_clear = command_time + datetime.timedelta(seconds=60)
         temp_photo_storage[chat_id] = deque([
             (msg, ts) for msg, ts in temp_photo_storage[chat_id]
             if not (start_clear <= ts <= end_clear)

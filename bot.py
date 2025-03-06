@@ -325,40 +325,55 @@ async def report_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Фиксируем время получения команды
-    command_time = datetime.datetime.now()
-    await update.message.reply_text("Фотoотчет получен. Ждите 5 минут для завершения отчета.")
-    # Ждем 5 минут, чтобы принять фото как до, так и после команды
-    await asyncio.sleep(300)  # 5 минут
-
-    # Определяем временное окно: от 5 минут до команды до 5 минут после
-    lower_bound = command_time - datetime.timedelta(seconds=300)
-    upper_bound = command_time + datetime.timedelta(seconds=300)
-
-    recent_photos = []
+    command_time = datetime.datetime.now(KYIV_TZ)
+    # Собираем фото, отправленные за 5 минут до команды
+    photos_before = []
     for msg, timestamp in list(temp_photo_storage[chat_id]):
-        if lower_bound <= timestamp <= upper_bound:
-            recent_photos.append(msg)
-    logging.info(f"Проверка отчета: найдено {len(recent_photos)} фото")
-    if recent_photos:
-        report_date_str = now.strftime("%d-%m-%Y")
-        report_time_str = now.strftime("%H:%M")
+        if command_time - datetime.timedelta(seconds=300) <= timestamp <= command_time:
+            photos_before.append(msg)
+
+    if photos_before:
+        # Режим 2: Фото уже есть – сразу формируем отчёт
+        collected_photos = photos_before
+    else:
+        # Режим 1: Нет фото до команды, просим прислать их в течение 5 минут
+        await update.message.reply_text("У вас есть 5 минут чтобы прислать все фотографии к фотоотчету.")
+        await asyncio.sleep(300)  # ждём 5 минут
+        collection_start = command_time
+        collection_end = command_time + datetime.timedelta(seconds=300)
+        collected_photos = []
+        for msg, timestamp in list(temp_photo_storage[chat_id]):
+            if collection_start <= timestamp <= collection_end:
+                collected_photos.append(msg)
+
+    final_time = datetime.datetime.now(KYIV_TZ)
+    logging.info(f"Проверка отчета: найдено {len(collected_photos)} фото")
+    if collected_photos:
+        report_date_str = final_time.strftime("%d-%m-%Y")
+        report_time_str = final_time.strftime("%H:%M")
         new_report = ArchiveReport(
             group_id=chat_id,
             group_name=update.message.chat.title or f"Chat_{chat_id}",
             report_date=report_date_str,
             report_time=report_time_str,
-            photo_count=len(recent_photos)
+            photo_count=len(collected_photos)
         )
         if chat_id in archive_reports:
             archive_reports[chat_id].append(new_report)
         else:
             archive_reports[chat_id] = [new_report]
         save_archive_reports(archive_reports)
-        await update.message.reply_text(f"Отчет принят! Всего фотографий: {len(recent_photos)}")
-        temp_photo_storage[chat_id].clear()
+        await update.message.reply_text(f"Отчет принят! Всего фотографий: {len(collected_photos)}")
+        # Удаляем фото, попавшие в интервал [command_time - 5 мин, command_time + 5 мин]
+        start_clear = command_time - datetime.timedelta(seconds=300)
+        end_clear = command_time + datetime.timedelta(seconds=300)
+        temp_photo_storage[chat_id] = deque([
+            (msg, ts) for msg, ts in temp_photo_storage[chat_id]
+            if not (start_clear <= ts <= end_clear)
+        ])
     else:
         await update.message.reply_text("Отчет не принят. Нет фотографий для отчета.")
+
 
 # Задача по очистке устаревших фото из временного хранилища
 async def clear_old_photos():

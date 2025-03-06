@@ -327,7 +327,7 @@ async def report_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await asyncio.sleep(300)  # Ждем, чтобы гарантированно получить все фото
+    await asyncio.sleep(5)  # Ждем, чтобы гарантированно получить все фото
     current_time = datetime.datetime.now()
     recent_photos = []
     file_ids = []
